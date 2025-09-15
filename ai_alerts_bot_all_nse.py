@@ -10,12 +10,11 @@ from flask import Flask
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
-from nsepython import nsefetch
 
 # =====================
 # TELEGRAM SETTINGS
 # =====================
-BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")  # Set in environment
+BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 def send_telegram_message(message):
@@ -33,36 +32,61 @@ def send_telegram_message(message):
 # =====================
 def market_open():
     now = datetime.datetime.now()
-    if now.weekday() >= 5:  # Sat(5), Sun(6)
+    if now.weekday() >= 5:
         return False
     start = now.replace(hour=9, minute=15, second=0, microsecond=0)
     end = now.replace(hour=15, minute=30, second=0, microsecond=0)
     return start <= now <= end
 
 # =====================
-# NSE STOCK LIST FETCH WITH DEFENSIVE CHECKS
+# Robust NSE fetch for Nifty 50 stocks
 # =====================
 def get_all_nse_stocks():
     url = "https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%2050"
-    data = nsefetch(url)
-    if not data or "data" not in data:
-        print("NSE API response missing 'data' key or empty response:", data)
-        send_telegram_message("⚠️ NSE API structure changed or empty response for NIFTY 50 stocks.")
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.nseindia.com"
+    }
+    with requests.Session() as session:
+        session.headers.update(headers)
+        session.get("https://www.nseindia.com")  # required to set cookies
+        res = session.get(url, timeout=10)
+        try:
+            data = res.json()
+        except Exception as e:
+            print("Failed to parse JSON from NSE:", e)
+            print("Response text:", res.text)
+            return []
+    if "data" not in data:
+        print("NSE API response missing 'data' key:", data)
+        send_telegram_message("⚠️ NSE API structure issue: 'data' key missing for NIFTY 50 stocks.")
         return []
     return [stock["symbol"] for stock in data["data"] if "symbol" in stock]
 
 STOCKS = get_all_nse_stocks()
 
 # =====================
-# MODEL TRAINING
+# Fetch stock data from NSE API
 # =====================
-MODEL_FILE = "model.pkl"
-FEATURES = ["Close", "MA5", "MA10"]
-
 def fetch_stock_data(symbol):
     url = f"https://www.nseindia.com/api/chart-databyindex?index={symbol}-EQ&interval=5minute"
-    data = nsefetch(url)
-    if not data or "grapthData" not in data:  # NSE key (misspelled)
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.nseindia.com"
+    }
+    with requests.Session() as session:
+        session.headers.update(headers)
+        session.get("https://www.nseindia.com")
+        res = session.get(url)
+        try:
+            data = res.json()
+        except Exception as e:
+            print(f"Failed to get data for {symbol}:", e)
+            return None
+    if "grapthData" not in data:  # Note: 'grapthData' is misspelled in NSE API
+        print(f"No 'grapthData' for {symbol}: {data.keys()}")
         return None
     try:
         df = pd.DataFrame(data["grapthData"], columns=["timestamp", "Close"])
@@ -73,6 +97,12 @@ def fetch_stock_data(symbol):
     except Exception as e:
         print(f"Error processing data for {symbol}:", e)
         return None
+
+# =====================
+# Train the Random Forest model
+# =====================
+MODEL_FILE = "model.pkl"
+FEATURES = ["Close", "MA5", "MA10"]
 
 def train_model(symbol="INFY"):
     print(f"Training model on {symbol} historical data...")
@@ -105,7 +135,7 @@ def load_model():
     return train_model()
 
 # =====================
-# ALERT GENERATION LOOP
+# Generate buy/sell alerts
 # =====================
 def generate_alerts(model, features):
     if not market_open():
@@ -119,17 +149,16 @@ def generate_alerts(model, features):
             latest = df.iloc[-1]
             X_live = pd.DataFrame([[latest[feat] for feat in features]], columns=features)
             prediction = model.predict(X_live)[0]
-            if prediction == 1:
-                msg = f"📈 BUY Signal: {symbol} at {latest['Close']:.2f}"
-            else:
-                msg = f"📉 SELL Signal: {symbol} at {latest['Close']:.2f}"
+            msg = (f"📈 BUY Signal: {symbol} at {latest['Close']:.2f}"
+                   if prediction == 1 else
+                   f"📉 SELL Signal: {symbol} at {latest['Close']:.2f}")
             print(msg)
             send_telegram_message(msg)
         except Exception as e:
             print(f"Error processing {symbol}:", e)
 
 # =====================
-# MINIMAL FLASK SERVER TO SATISFY PORT BINDING
+# Minimal Flask server for Render port binding
 # =====================
 app = Flask(__name__)
 
@@ -138,25 +167,27 @@ def home():
     return "Trading Alert Bot is running."
 
 def run_flask():
-    port = int(os.environ.get("PORT", 10000))  # Render sets this env var
+    port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
 
 # =====================
-# MAIN SCRIPT ENTRY
+# Main entry point
 # =====================
 if __name__ == "__main__":
-    # Start Flask server in a daemon thread
     flask_thread = threading.Thread(target=run_flask)
     flask_thread.daemon = True
     flask_thread.start()
 
-    model, FEATURES = load_model()
+    if not STOCKS:
+        print("No stocks fetched. Please check logs and NSE API accessibility.")
+
+    model, features = load_model()
     send_telegram_message("🚀 Bot started successfully with NSE live data!")
 
     while True:
         if market_open():
-            generate_alerts(model, FEATURES)
-            time.sleep(300)  # every 5 minutes
+            generate_alerts(model, features)
+            time.sleep(300)  # check every 5 minutes
         else:
             print("Market closed. Sleeping 5 minutes...")
             time.sleep(300)
