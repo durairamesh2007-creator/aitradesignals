@@ -9,6 +9,12 @@ import joblib
 from sklearn.ensemble import RandomForestClassifier
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+import ssl
+import certifi
+
+# Fix SSL issue on Render
+ssl._create_default_https_context = lambda: ssl.create_default_context(cafile=certifi.where())
+
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
@@ -154,4 +160,5 @@ if __name__ == "__main__":
                     send_telegram_message(msg)
 
         time.sleep(300)  # check every 5 mins
+
 
