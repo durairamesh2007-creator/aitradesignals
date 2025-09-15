@@ -1,6 +1,7 @@
+yfinance
 pandas
 numpy
 scikit-learn
 joblib
-yfinance
 requests
+certifi
