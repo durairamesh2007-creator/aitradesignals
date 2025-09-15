@@ -13,14 +13,16 @@ from nsepython import nsefetch
 # =====================
 # TELEGRAM SETTINGS
 # =====================
-BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")  # set in Render dashboard
+BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")  # Set in environment or Render secrets
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 def send_telegram_message(message):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     params = {"chat_id": CHAT_ID, "text": message}
     try:
-        requests.get(url, params=params, timeout=10)
+        response = requests.get(url, params=params, timeout=10)
+        if not response.ok:
+            print(f"Telegram API returned status {response.status_code}: {response.text}")
     except Exception as e:
         print("Telegram Error:", e)
 
@@ -36,12 +38,16 @@ def market_open():
     return start <= now <= end
 
 # =====================
-# NSE STOCK LIST
+# NSE STOCK LIST FETCH WITH DEFENSIVE CHECKS
 # =====================
 def get_all_nse_stocks():
     url = "https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%2050"
     data = nsefetch(url)
-    return [stock["symbol"] for stock in data["data"]]
+    if not data or "data" not in data:
+        print("NSE API response missing 'data' key or empty response:", data)
+        send_telegram_message("⚠️ NSE API structure changed or empty response for NIFTY 50 stocks.")
+        return []
+    return [stock["symbol"] for stock in data["data"] if "symbol" in stock]
 
 STOCKS = get_all_nse_stocks()
 
@@ -54,13 +60,17 @@ FEATURES = ["Close", "MA5", "MA10"]
 def fetch_stock_data(symbol):
     url = f"https://www.nseindia.com/api/chart-databyindex?index={symbol}-EQ&interval=5minute"
     data = nsefetch(url)
-    if "grapthData" not in data:
+    if not data or "grapthData" not in data:  # Note: 'grapthData' is the API's actual key (misspelled)
         return None
-    df = pd.DataFrame(data["grapthData"], columns=["timestamp", "Close"])
-    df["Close"] = df["Close"].astype(float)
-    df["MA5"] = df["Close"].rolling(5).mean()
-    df["MA10"] = df["Close"].rolling(10).mean()
-    return df.dropna()
+    try:
+        df = pd.DataFrame(data["grapthData"], columns=["timestamp", "Close"])
+        df["Close"] = pd.to_numeric(df["Close"], errors='coerce')
+        df["MA5"] = df["Close"].rolling(5).mean()
+        df["MA10"] = df["Close"].rolling(10).mean()
+        return df.dropna()
+    except Exception as e:
+        print(f"Error processing data for {symbol}:", e)
+        return None
 
 def train_model(symbol="INFY"):
     print(f"Training model on {symbol} historical data...")
@@ -68,23 +78,17 @@ def train_model(symbol="INFY"):
     if df is None or df.empty:
         print("No data for training!")
         return None, None
-
     df["Return"] = df["Close"].pct_change()
     df["Target"] = np.where(df["Return"].shift(-1) > 0, 1, 0)
     df.dropna(inplace=True)
-
     X = df[FEATURES]
     y = df["Target"]
-
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
-
     model = RandomForestClassifier(n_estimators=100, random_state=42)
     model.fit(X_train, y_train)
-
     preds = model.predict(X_test)
     acc = accuracy_score(y_test, preds)
-    print("Model accuracy:", acc)
-
+    print(f"Model accuracy: {acc:.4f}")
     joblib.dump((model, FEATURES), MODEL_FILE)
     print("Model saved to", MODEL_FILE)
     return model, FEATURES
@@ -93,53 +97,45 @@ def load_model():
     if os.path.exists(MODEL_FILE):
         try:
             return joblib.load(MODEL_FILE)
-        except:
-            print("Old model format detected, retraining...")
+        except Exception:
+            print("Old model format or load error, retraining...")
             return train_model()
-    else:
-        return train_model()
+    return train_model()
 
 # =====================
-# ALERT GENERATOR
+# ALERT GENERATION LOOP
 # =====================
-def generate_alerts(model, FEATURES):
+def generate_alerts(model, features):
     if not market_open():
         print("Market closed. Waiting...")
         return
-
     for symbol in STOCKS:
         try:
             df = fetch_stock_data(symbol)
             if df is None or df.empty:
                 continue
-
             latest = df.iloc[-1]
-            X_live = pd.DataFrame([[latest[feat] for feat in FEATURES]], columns=FEATURES)
-
+            X_live = pd.DataFrame([[latest[feat] for feat in features]], columns=features)
             prediction = model.predict(X_live)[0]
-
             if prediction == 1:
                 msg = f"📈 BUY Signal: {symbol} at {latest['Close']:.2f}"
             else:
                 msg = f"📉 SELL Signal: {symbol} at {latest['Close']:.2f}"
-
             print(msg)
             send_telegram_message(msg)
-
         except Exception as e:
             print(f"Error processing {symbol}:", e)
 
 # =====================
-# MAIN LOOP
+# MAIN SCRIPT
 # =====================
 if __name__ == "__main__":
-    model, FEATURES = load_model()
+    model, features = load_model()
     send_telegram_message("🚀 Bot started successfully with NSE live data!")
-
     while True:
         if market_open():
-            generate_alerts(model, FEATURES)
-            time.sleep(300)  # every 5 min
+            generate_alerts(model, features)
+            time.sleep(300)  # Run every 5 minutes
         else:
-            print("Market closed. Sleeping 5 minutes...")
+            print("Market closed. Sleeping for 5 minutes...")
             time.sleep(300)
