@@ -21,18 +21,15 @@ CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 CSV_FILE = "nse_stocks.csv"
 MODEL_DIR = "models"
-FORCE_MARKET_OPEN = True   # 🔥 Set False for real market, True for testing always-on
+FORCE_MARKET_OPEN = True   # 🔥 True = always run, False = only NSE market hours
 
-# Create directories
 os.makedirs(MODEL_DIR, exist_ok=True)
 
-# Logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s:%(message)s"
 )
 
-# Flask app for health monitoring
 app = Flask(__name__)
 
 # ============================================
@@ -54,7 +51,7 @@ def send_telegram_message(message: str):
 IST = timedelta(hours=5, minutes=30)
 
 def market_open(now: datetime) -> bool:
-    if now.weekday() >= 5:  # Sat/Sun closed
+    if now.weekday() >= 5:  # Sat/Sun
         return False
     open_time = now.replace(hour=9, minute=15, second=0, microsecond=0)
     close_time = now.replace(hour=15, minute=30, second=0, microsecond=0)
@@ -70,7 +67,7 @@ def load_symbols():
             return df['Symbol'].dropna().astype(str).tolist()
         except Exception as e:
             logging.error(f"Failed to load {CSV_FILE}: {e}")
-    logging.warning("No CSV found, using default symbols.")
+    logging.warning("No CSV found, using defaults.")
     return ["INFY.NSE", "TCS.NSE", "RELIANCE.NSE", "HDFCBANK.NSE"]
 
 symbols = load_symbols()
@@ -113,7 +110,7 @@ def add_indicators(df):
     return df.dropna()
 
 # ============================================
-# MODEL
+# MODEL TRAINING
 # ============================================
 def train_model(symbol):
     df = fetch_stock_data(symbol)
@@ -144,8 +141,7 @@ def train_model(symbol):
     acc = accuracy_score(y_test, best_model.predict(X_test))
     logging.info(f"{symbol} model trained. Accuracy={acc:.2f}")
 
-    model_file = os.path.join(MODEL_DIR, f"{symbol}.pkl")
-    joblib.dump(best_model, model_file)
+    joblib.dump(best_model, os.path.join(MODEL_DIR, f"{symbol}.pkl"))
     return best_model
 
 def load_model(symbol):
@@ -155,7 +151,7 @@ def load_model(symbol):
     return train_model(symbol)
 
 # ============================================
-# PREDICTION & ALERTS
+# PREDICTIONS & ALERTS
 # ============================================
 def process_symbol(symbol):
     df = fetch_stock_data(symbol, output_size=100)
@@ -189,25 +185,39 @@ def process_symbol(symbol):
     logging.info(msg)
 
 # ============================================
-# MAIN LOOP
+# MAIN LOOP WITH DAILY RETRAINING
 # ============================================
 def main():
-    logging.info("Starting trading bot loop...")
+    logging.info("Starting trading bot...")
 
-    # Train all models at startup
+    last_trained_date = None
+
+    # Train once at startup
     for sym in symbols:
         try:
             train_model(sym)
         except Exception as e:
             logging.error(f"Training failed for {sym}: {e}")
 
-    # Force one test run immediately
+    # Send initial alerts
     with ThreadPoolExecutor() as executor:
         executor.map(process_symbol, symbols)
-    logging.info("✅ Initial alerts sent. Entering loop.")
 
     while True:
         now = datetime.utcnow() + IST
+
+        # Daily retraining at 09:15 IST
+        if (FORCE_MARKET_OPEN or market_open(now)) and (last_trained_date != now.date()) and now.hour == 9 and now.minute >= 15:
+            logging.info("⏳ Daily retraining triggered...")
+            for sym in symbols:
+                try:
+                    train_model(sym)
+                except Exception as e:
+                    logging.error(f"Retraining failed for {sym}: {e}")
+            last_trained_date = now.date()
+            logging.info("✅ Daily retraining complete.")
+
+        # Run predictions during market hours
         if FORCE_MARKET_OPEN or market_open(now):
             with ThreadPoolExecutor() as executor:
                 executor.map(process_symbol, symbols)
