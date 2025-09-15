@@ -110,7 +110,7 @@ def fetch_stock_data(symbol):
 # =====================
 FEATURES = ["Close", "MA5", "MA10", "RSI", "MACD", "MACD_signal"]
 
-def train_model(symbol="INFY.NS"):
+def train_model(symbol="INFY.NSE"):
     logging.info(f"Training model on {symbol}...")
     df = fetch_stock_data(symbol)
     if df is None or df.empty:
@@ -208,4 +208,5 @@ if __name__ == "__main__":
         else:
             logging.info("Market closed; sleeping.")
         time.sleep(300)
+
 
