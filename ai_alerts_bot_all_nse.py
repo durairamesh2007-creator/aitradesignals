@@ -14,11 +14,9 @@ from sklearn.metrics import accuracy_score
 # =====================
 # CONFIG
 # =====================
-FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY")
+TWELVE_DATA_API_KEY = os.getenv("TWELVE_DATA_API_KEY")
 BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-
-BASE_URL = "https://finnhub.io/api/v1"
 
 # =====================
 # Telegram notification
@@ -38,63 +36,54 @@ def send_telegram_message(message):
 # =====================
 def market_open():
     now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=5, minutes=30)))
-    if now.weekday() >= 5:  # weekend
+    if now.weekday() >= 5:
         return False
     start = now.replace(hour=9, minute=15, second=0, microsecond=0)
     end = now.replace(hour=15, minute=30, second=0, microsecond=0)
     return start <= now <= end
 
 # =====================
-# Fetch NSE symbols dynamically
+# Static NSE symbol list (update or fetch externally)
 # =====================
-def fetch_nse_symbols():
-    url = f"{BASE_URL}/stock/symbol"
-    params = {"exchange": "NSE", "token": FINNHUB_API_KEY}
-    response = requests.get(url, params=params)
-    symbols = []
-    if response.ok:
-        data = response.json()
-        for item in data:
-            if item.get("type") == "Common Stock":
-                symbols.append(item["symbol"])
-    else:
-        print("Failed to fetch NSE symbols:", response.text)
-    return symbols
+def load_nse_symbols():
+    # You can expand or maintain this list regularly or read it from a file.
+    return [
+        "INFY.NS", "TCS.NS", "RELIANCE.NS", "HDFCBANK.NS", "ICICIBANK.NS",
+        "KOTAKBANK.NS", "HINDUNILVR.NS", "ITC.NS", "SBIN.NS", "AXISBANK.NS"
+    ]
+
+STOCKS = load_nse_symbols()
 
 # =====================
-# Fetch intraday candles from Finnhub
+# Fetch intraday data from Twelve Data API
 # =====================
-def fetch_stock_candles(symbol, interval="5", days=30):
-    url = f"{BASE_URL}/stock/candle"
-    now = int(datetime.datetime.now().timestamp())
-    past = int((datetime.datetime.now() - datetime.timedelta(days=days)).timestamp())
+def fetch_stock_data(symbol):
+    url = "https://api.twelvedata.com/time_series"
     params = {
         "symbol": symbol,
-        "resolution": interval,
-        "from": past,
-        "to": now,
-        "token": FINNHUB_API_KEY
+        "interval": "5min",
+        "apikey": TWELVE_DATA_API_KEY,
+        "format": "json",
+        "outputsize": 100
     }
-    response = requests.get(url, params=params)
-    if response.ok:
-        data = response.json()
-        if data.get("s") != "ok":
-            print(f"No candle data for {symbol}: {data}")
+    try:
+        resp = requests.get(url, params=params, timeout=10)
+        if not resp.ok:
+            print(f"Twelve Data API error for {symbol}: {resp.status_code} {resp.text}")
             return None
-        df = pd.DataFrame({
-            "t": pd.to_datetime(data["t"], unit='s'),
-            "Open": data["o"],
-            "High": data["h"],
-            "Low": data["l"],
-            "Close": data["c"],
-            "Volume": data["v"]
-        })
-        df.set_index("t", inplace=True)
+        data = resp.json()
+        if "values" not in data:
+            print(f"No 'values' field in API response for {symbol}: {data}")
+            return None
+        df = pd.DataFrame(data["values"])
+        df["datetime"] = pd.to_datetime(df["datetime"])
+        df = df.sort_values("datetime")
+        df["Close"] = pd.to_numeric(df["close"])
         df["MA5"] = df["Close"].rolling(5).mean()
         df["MA10"] = df["Close"].rolling(10).mean()
         return df.dropna()
-    else:
-        print(f"Failed to fetch candles for {symbol}: {response.text}")
+    except Exception as e:
+        print(f"Error fetching data for {symbol}:", e)
         return None
 
 # =====================
@@ -103,9 +92,9 @@ def fetch_stock_candles(symbol, interval="5", days=30):
 MODEL_FILE = "model.pkl"
 FEATURES = ["Close", "MA5", "MA10"]
 
-def train_model(symbol="INFY.NSE"):
+def train_model(symbol="INFY.NS"):
     print(f"Training model on {symbol} historical data...")
-    df = fetch_stock_candles(symbol)
+    df = fetch_stock_data(symbol)
     if df is None or df.empty:
         print("No data for training!")
         return None, None
@@ -128,7 +117,7 @@ def load_model():
     if os.path.exists(MODEL_FILE):
         try:
             return joblib.load(MODEL_FILE)
-        except:
+        except Exception:
             print("Failed to load model, retraining.")
             return train_model()
     else:
@@ -143,7 +132,7 @@ def generate_alerts(model, features, stocks):
         return
     for symbol in stocks:
         try:
-            df = fetch_stock_candles(symbol)
+            df = fetch_stock_data(symbol)
             if df is None or df.empty:
                 continue
             latest = df.iloc[-1]
@@ -164,7 +153,7 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "Finnhub NSE Trading Alert Bot is Running."
+    return "Twelve Data NSE Trading Alert Bot is Running."
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -174,29 +163,12 @@ def run_flask():
 # Main execution
 # =====================
 if __name__ == "__main__":
-    # Fetch NSE symbols dynamically
-    STOCKS = []
-try:
-    STOCKS = fetch_nse_symbols()
-except Exception as e:
-    print("Symbol fetch exception:", e)
-
-if not STOCKS:
-    print("Falling back to default symbol list.")
-    STOCKS = [
-    "RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFCBANK.NS", "ICICIBANK.NS",
-    "KOTAKBANK.NS", "SBIN.NS", "AXISBANK.NS", "LT.NS", "HINDUNILVR.NS",
-    "BAJFINANCE.NS", "ITC.NS", "HCLTECH.NS", "WIPRO.NS", "ASIANPAINT.NS",
-    "ULTRACEMCO.NS", "MARUTI.NS", "SUNPHARMA.NS", "NESTLEIND.NS", "TITAN.NS"
-    # 👉 you can expand to all NSE stocks later
-]
-    
     flask_thread = threading.Thread(target=run_flask)
     flask_thread.daemon = True
     flask_thread.start()
 
     model, features = load_model()
-    send_telegram_message("🚀 Finnhub NSE Bot started successfully!")
+    send_telegram_message("🚀 Bot started successfully with Twelve Data API!")
 
     while True:
         if market_open():
@@ -205,4 +177,3 @@ if not STOCKS:
         else:
             print("Market closed. Sleeping 5 minutes...")
             time.sleep(300)
-
