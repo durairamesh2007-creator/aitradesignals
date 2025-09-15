@@ -1,8 +1,10 @@
-yfinance
-nsepython
+requests
 pandas
 numpy
-scikit-learn
 joblib
-requests
 flask
+scikit-learn
+xgboost
+pandas_ta
+apscheduler
+gunicorn
