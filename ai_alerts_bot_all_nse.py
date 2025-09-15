@@ -175,10 +175,21 @@ def run_flask():
 # =====================
 if __name__ == "__main__":
     # Fetch NSE symbols dynamically
+    STOCKS = []
+try:
     STOCKS = fetch_nse_symbols()
-    if not STOCKS:
-        print("No symbols fetched, using fallback list.")
-        STOCKS = ["INFY.NSE", "TCS.NSE", "RELIANCE.NSE"]  # fallback
+except Exception as e:
+    print("Symbol fetch exception:", e)
+
+if not STOCKS:
+    print("Falling back to default symbol list.")
+    STOCKS = [
+    "RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFCBANK.NS", "ICICIBANK.NS",
+    "KOTAKBANK.NS", "SBIN.NS", "AXISBANK.NS", "LT.NS", "HINDUNILVR.NS",
+    "BAJFINANCE.NS", "ITC.NS", "HCLTECH.NS", "WIPRO.NS", "ASIANPAINT.NS",
+    "ULTRACEMCO.NS", "MARUTI.NS", "SUNPHARMA.NS", "NESTLEIND.NS", "TITAN.NS"
+    # 👉 you can expand to all NSE stocks later
+]
     
     flask_thread = threading.Thread(target=run_flask)
     flask_thread.daemon = True
@@ -194,3 +205,4 @@ if __name__ == "__main__":
         else:
             print("Market closed. Sleeping 5 minutes...")
             time.sleep(300)
+
