@@ -9,8 +9,8 @@ import joblib
 from sklearn.ensemble import RandomForestClassifier
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-TELEGRAM_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
-TELEGRAM_CHAT_ID = "YOUR_TELEGRAM_CHAT_ID"
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 # =======================================
 # Telegram
@@ -154,3 +154,4 @@ if __name__ == "__main__":
                     send_telegram_message(msg)
 
         time.sleep(300)  # check every 5 mins
+
