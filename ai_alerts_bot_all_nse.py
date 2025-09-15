@@ -8,12 +8,10 @@ import os
 import threading
 import logging
 import pandas_ta as ta
-from io import StringIO
 from flask import Flask
 from xgboost import XGBClassifier
 from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.metrics import accuracy_score
-from apscheduler.schedulers.background import BackgroundScheduler
 
 # =====================
 # CONFIGURATION
@@ -51,46 +49,26 @@ def market_open():
     return start <= now <= end
 
 # =====================
-# Auto update NSE symbols from official EQUITY_L.csv daily at 6 AM IST
+# Load static NSE symbols from local CSV
+# Make sure 'nse_symbols.csv' is in your repo and includes SYMBOL column
 # =====================
-def update_symbol_list():
-    url = "https://www1.nseindia.com/content/equities/EQUITY_L.csv"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Referer": "https://www.nseindia.com"
-    }
-    try:
-        with requests.Session() as session:
-            session.headers.update(headers)
-            session.get("https://www.nseindia.com", timeout=5)
-            res = session.get(url, timeout=10)
-            res.encoding = 'utf-8'
-            df = pd.read_csv(StringIO(res.text))
-            df.to_csv(SYMBOLS_CSV, index=False)
-            logging.info(f"Updated symbol list with {len(df)} entries.")
-    except Exception as e:
-        logging.error(f"Error updating symbol list: {e}")
-        send_telegram_message(f"⚠️ Error updating symbol list: {e}")
-
 def load_stock_symbols():
-    if not os.path.exists(SYMBOLS_CSV):
-        logging.warning("Symbol CSV not found, updating now.")
-        update_symbol_list()
     try:
         df = pd.read_csv(SYMBOLS_CSV)
         if "SYMBOL" not in df.columns:
-            raise ValueError("No SYMBOL column in symbols CSV")
-        symbols = [f"{s}.NS" for s in df["SYMBOL"].tolist()]
-        logging.info(f"Loaded {len(symbols)} symbols from CSV.")
+            raise ValueError("No SYMBOL column found in CSV")
+        symbols = [f"{s.upper()}.NS" for s in df["SYMBOL"].tolist()]
+        logging.info(f"Loaded {len(symbols)} symbols from static CSV.")
         return symbols
     except Exception as e:
-        logging.error(f"Failed to load symbols: {e}")
-        send_telegram_message(f"⚠️ Failed to load symbol list: {e}")
+        logging.error(f"Failed to load static symbol list: {e}")
+        send_telegram_message(f"⚠️ Failed to load static symbol list: {e}")
         return ["INFY.NS", "TCS.NS", "RELIANCE.NS"]  # fallback
 
+STOCKS = load_stock_symbols()
+
 # =====================
-# Fetch 5min intraday data from Twelve Data API with indicators
+# Fetch intraday data from Twelve Data API with indicators
 # =====================
 def fetch_stock_data(symbol):
     url = "https://api.twelvedata.com/time_series"
@@ -128,7 +106,7 @@ def fetch_stock_data(symbol):
         return None
 
 # =====================
-# Train & Save Model
+# Model training & loading
 # =====================
 FEATURES = ["Close", "MA5", "MA10", "RSI", "MACD", "MACD_signal"]
 
@@ -145,8 +123,8 @@ def train_model(symbol="INFY.NS"):
     y = df["Target"]
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
     model = XGBClassifier(use_label_encoder=False, eval_metric="logloss")
-    params = {"n_estimators": [50, 100], "max_depth": [3, 5], "learning_rate": [0.01, 0.1]}
     from sklearn.model_selection import GridSearchCV
+    params = {"n_estimators": [50, 100], "max_depth": [3, 5], "learning_rate": [0.01, 0.1]}
     grid = GridSearchCV(model, params, cv=3)
     grid.fit(X_train, y_train)
     best_model = grid.best_estimator_
@@ -160,17 +138,15 @@ def train_model(symbol="INFY.NS"):
 def load_model():
     if os.path.exists(MODEL_FILE):
         try:
-            model, features = joblib.load(MODEL_FILE)
-            logging.info("Model loaded from file.")
-            return model, features
+            return joblib.load(MODEL_FILE)
         except Exception as e:
-            logging.error(f"Error loading model, retraining: {e}")
+            logging.error(f"Model load failed, retraining: {e}")
             return train_model()
     else:
         return train_model()
 
 # =====================
-# Generate Alerts
+# Generate alerts with price movement filter
 # =====================
 MIN_PRICE_CHANGE = 0.005  # 0.5%
 
@@ -184,22 +160,22 @@ def generate_alerts(model, features, stocks):
             if df is None or df.empty:
                 continue
             latest = df.iloc[-1]
-            prev = df.iloc[-2] if len(df) > 1 else None
-            if prev is not None:
+            if len(df) > 1:
+                prev = df.iloc[-2]
                 change = abs(latest["Close"] - prev["Close"]) / prev["Close"]
                 if change < MIN_PRICE_CHANGE:
                     continue  # skip low moves
             X_live = pd.DataFrame([[latest[feat] for feat in features]], columns=features)
-            pred = model.predict(X_live)[0]
-            msg = f"📈 BUY: {symbol} at {latest['Close']:.2f}" if pred == 1 else f"📉 SELL: {symbol} at {latest['Close']:.2f}"
+            prediction = model.predict(X_live)[0]
+            msg = f"📈 BUY: {symbol} at {latest['Close']:.2f}" if prediction == 1 else f"📉 SELL: {symbol} at {latest['Close']:.2f}"
             logging.info(msg)
             send_telegram_message(msg)
         except Exception as e:
-            logging.error(f"Alert generation error for {symbol}: {e}")
-            send_telegram_message(f"⚠️ Alert error {symbol}: {e}")
+            logging.error(f"Alert error for {symbol}: {e}")
+            send_telegram_message(f"⚠️ Alert error for {symbol}: {e}")
 
 # =====================
-# Flask Server for health check & Render port binding
+# Flask server and Render port binding
 # =====================
 app = Flask(__name__)
 
@@ -212,17 +188,9 @@ def run_flask():
     app.run(host="0.0.0.0", port=port)
 
 # =====================
-# Main execution
+# Main execution loop
 # =====================
 if __name__ == "__main__":
-    # Schedule daily symbol update at 6 AM IST
-    scheduler = BackgroundScheduler(timezone="Asia/Kolkata")
-    scheduler.add_job(update_symbol_list, "cron", hour=6, minute=0)
-    scheduler.start()
-
-    # Initial symbol load
-    STOCKS = load_stock_symbols()
-
     flask_thread = threading.Thread(target=run_flask)
     flask_thread.daemon = True
     flask_thread.start()
@@ -231,12 +199,12 @@ if __name__ == "__main__":
     if model is None:
         logging.error("Model training failed. Exiting.")
         exit(1)
+
     send_telegram_message("🚀 Bot started successfully with Twelve Data API!")
 
-    # Scheduled alert generation every 5 minutes
     while True:
         if market_open():
             generate_alerts(model, FEATURES, STOCKS)
         else:
-            logging.info("Market closed. Sleeping.")
+            logging.info("Market closed; sleeping.")
         time.sleep(300)
