@@ -57,13 +57,13 @@ def load_stock_symbols():
         df = pd.read_csv(SYMBOLS_CSV)
         if "SYMBOL" not in df.columns:
             raise ValueError("No SYMBOL column found in CSV")
-        symbols = [f"{s.upper()}.NS" for s in df["SYMBOL"].tolist()]
+        symbols = [f"{s.upper()}.NSE" for s in df["SYMBOL"].tolist()]
         logging.info(f"Loaded {len(symbols)} symbols from static CSV.")
         return symbols
     except Exception as e:
         logging.error(f"Failed to load static symbol list: {e}")
         send_telegram_message(f"⚠️ Failed to load static symbol list: {e}")
-        return ["INFY.NS", "TCS.NS", "RELIANCE.NS"]  # fallback
+        return ["INFY.NSE", "TCS.NSE", "RELIANCE.NSE"]  # fallback
 
 STOCKS = load_stock_symbols()
 
@@ -208,3 +208,4 @@ if __name__ == "__main__":
         else:
             logging.info("Market closed; sleeping.")
         time.sleep(300)
+
