@@ -1,7 +1,7 @@
 yfinance
+nsepython
 pandas
 numpy
 scikit-learn
 joblib
 requests
-certifi
