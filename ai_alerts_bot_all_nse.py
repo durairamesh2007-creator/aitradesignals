@@ -5,6 +5,8 @@ import pandas as pd
 import numpy as np
 import joblib
 import os
+import threading
+from flask import Flask
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
@@ -13,7 +15,7 @@ from nsepython import nsefetch
 # =====================
 # TELEGRAM SETTINGS
 # =====================
-BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")  # Set in environment or Render secrets
+BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")  # Set in environment
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 def send_telegram_message(message):
@@ -31,7 +33,7 @@ def send_telegram_message(message):
 # =====================
 def market_open():
     now = datetime.datetime.now()
-    if now.weekday() >= 5:  # Saturday(5), Sunday(6)
+    if now.weekday() >= 5:  # Sat(5), Sun(6)
         return False
     start = now.replace(hour=9, minute=15, second=0, microsecond=0)
     end = now.replace(hour=15, minute=30, second=0, microsecond=0)
@@ -60,7 +62,7 @@ FEATURES = ["Close", "MA5", "MA10"]
 def fetch_stock_data(symbol):
     url = f"https://www.nseindia.com/api/chart-databyindex?index={symbol}-EQ&interval=5minute"
     data = nsefetch(url)
-    if not data or "grapthData" not in data:  # Note: 'grapthData' is the API's actual key (misspelled)
+    if not data or "grapthData" not in data:  # NSE key (misspelled)
         return None
     try:
         df = pd.DataFrame(data["grapthData"], columns=["timestamp", "Close"])
@@ -127,15 +129,34 @@ def generate_alerts(model, features):
             print(f"Error processing {symbol}:", e)
 
 # =====================
-# MAIN SCRIPT
+# MINIMAL FLASK SERVER TO SATISFY PORT BINDING
+# =====================
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return "Trading Alert Bot is running."
+
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))  # Render sets this env var
+    app.run(host="0.0.0.0", port=port)
+
+# =====================
+# MAIN SCRIPT ENTRY
 # =====================
 if __name__ == "__main__":
-    model, features = load_model()
+    # Start Flask server in a daemon thread
+    flask_thread = threading.Thread(target=run_flask)
+    flask_thread.daemon = True
+    flask_thread.start()
+
+    model, FEATURES = load_model()
     send_telegram_message("🚀 Bot started successfully with NSE live data!")
+
     while True:
         if market_open():
-            generate_alerts(model, features)
-            time.sleep(300)  # Run every 5 minutes
+            generate_alerts(model, FEATURES)
+            time.sleep(300)  # every 5 minutes
         else:
-            print("Market closed. Sleeping for 5 minutes...")
+            print("Market closed. Sleeping 5 minutes...")
             time.sleep(300)
